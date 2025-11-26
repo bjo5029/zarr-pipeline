@@ -1,0 +1,21 @@
+system:
+  gpu_id: "0"
+  dask_workers: 1
+  dask_threads: 4
+
+paths:
+  input_root: "../data"
+  output_root: "output"
+  final_filename: "final_result.zarr"
+  bioformats_path: "./bioformats2raw-0.7.0/bin/bioformats2raw"
+
+preprocess:
+  rows: 4
+  cols: 3
+  overlap_pct: 0.1
+
+algorithm:
+  psf_sigma: 2.0
+  iterations: 20
+  pad_width: 32
+  

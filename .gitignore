@@ -1,0 +1,8 @@
+.env
+*.log
+__pycache__/
+data/
+output/
+secret.txt
+bioformats2raw-0.7.0/
+bioformats2raw-0.7.0.zip

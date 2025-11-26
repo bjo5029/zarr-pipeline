@@ -1,0 +1,43 @@
+conda create -n zarr_env python=3.10 -y
+conda activate zarr_env
+
+conda install -c conda-forge numpy zarr numcodecs blosc lz4 zstd -y
+conda install matplotlib -y
+
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+conda install -c conda-forge "dask[complete]" distributed -y
+
+conda install -c conda-forge openjdk=11 -y
+
+export JAVA_HOME="conda env list 결과 넣기"
+export PATH="$JAVA_HOME/bin:$PATH"
+source ~/.zshrc
+
+
+#--------------------------------------------------------------------------------
+
+
+# 1) 환경 생성 (conda-forge 기반 + libmamba solver)
+conda create -n zarr_env python=3.10 -c conda-forge --solver=libmamba -y
+conda activate zarr_env
+
+# 2) Zarr 관련 핵심 패키지
+conda install -c conda-forge --solver=libmamba numpy zarr numcodecs blosc lz4 zstd -y
+
+# 3) matplotlib
+conda install -c conda-forge --solver=libmamba matplotlib -y
+
+# 4) PyTorch (CUDA 12.1)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# 5) 전체 Dask
+conda install -c conda-forge --solver=libmamba "dask[complete]" distributed -y
+
+# 6) Java (OpenJDK 11)
+conda install -c conda-forge --solver=libmamba openjdk=11 -y
+
+# 7) JAVA_HOME 환경변수 등록
+export JAVA_HOME="$(dirname $(dirname $(which java)))"
+export PATH="$JAVA_HOME/bin:$PATH"
+source ~/.zshrc
