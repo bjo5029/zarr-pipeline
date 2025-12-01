@@ -4,6 +4,8 @@ import subprocess
 import time
 from pathlib import Path
 import dask
+from tqdm import tqdm
+from dask.distributed import get_client, as_completed
 
 def get_dir_size(path):
     """디렉토리 크기 계산"""
@@ -28,9 +30,7 @@ def run_cmd(cmd):
         raise e
 
 def convert_single_tiff_to_zarr(tiff_path: Path, out_root: Path, bioformats_path: str) -> Path:
-    """
-    하나의 TIFF를 bioformats2raw로 OME-Zarr로 변환.
-    """
+    """하나의 TIFF를 bioformats2raw로 OME-Zarr로 변환."""
     name = tiff_path.stem
     out_dir = out_root / f"{name}_zarr"
 
@@ -48,20 +48,12 @@ def convert_single_tiff_to_zarr(tiff_path: Path, out_root: Path, bioformats_path
         "--compression-properties", "clevel=5",
     ]
 
-    start = time.time()
     try:
         run_cmd(cmd)
     except Exception as e:
         print(f"Failed to convert {name}: {e}")
         return None
         
-    end = time.time()
-
-    # 로그 (병렬 실행 시 순서 섞일 수 있음)
-    # tiff_size = os.path.getsize(tiff_path)
-    # zarr_size = get_dir_size(out_dir)
-    # print(f"[{name}] Done ({end - start:.2f}s)")
-
     return out_dir
 
 def list_tiff_files(input_root_str):
@@ -72,7 +64,7 @@ def list_tiff_files(input_root_str):
     return files
 
 def run_conversion(cfg):
-    """전체 변환 실행 함수 (Dask Delayed 적용)"""
+    """전체 변환 실행 함수 (수정됨: 확실한 ProgressBar 적용)"""
     input_root = cfg['paths']['input_root']
     output_root = cfg['paths']['output_root']
     bioformats_path = cfg['paths'].get('bioformats_path', 'bioformats2raw')
@@ -91,8 +83,24 @@ def run_conversion(cfg):
     if not lazy_results:
         return []
 
-    # 2. 병렬 실행 (compute)
-    results = dask.compute(*lazy_results)
+    # dask.compute() 대신 client.compute()와 tqdm 사용
+    try:
+        # main.py에서 만든 Client를 가져옴
+        client = get_client()
+        
+        # 작업을 클러스터에 던짐 (즉시 리턴)
+        futures = client.compute(lazy_results)
+        
+        results = []
+        # as_completed: 작업이 끝나는 순서대로 하나씩 뱉어냄
+        for future in tqdm(as_completed(futures), total=len(futures), desc="TIFF to Zarr", unit="file"):
+            res = future.result() # 결과값 받기
+            results.append(res)
+            
+    except Exception as e:
+        # Client 연결 실패하면 기존 방식으로 폴백
+        print(f"Progress bar error (fallback to standard): {e}")
+        results = dask.compute(*lazy_results)
     
     # 3. 결과 필터링
     zarr_dirs = [res for res in results if res is not None]

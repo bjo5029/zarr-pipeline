@@ -1,34 +1,47 @@
 import os
 import sys
+import re
 import yaml
 import zarr
 import torch
+import numpy as np
+import dask.array as da
 from pathlib import Path
 from dask.distributed import Client
 
-# import local modules
-import tiff_to_zarr
+import tiff_to_zarr_parallel as tiff_to_zarr 
 import stitch
 
 def load_config():
     with open("config.yaml", 'r') as f:
         return yaml.safe_load(f)
 
+def parse_filename(filepath):
+    name = filepath.stem
+    # W{well}F{field}T{time}Z{z}C{ch} 패턴 파싱
+    pattern = r"W(\d+)F(\d+)T(\d+)Z(\d+)C(\d+)"
+    match = re.search(pattern, name)
+    if match:
+        return {
+            "W": int(match.group(1)),
+            "F": int(match.group(2)),
+            "T": int(match.group(3)),
+            "Z": int(match.group(4)),
+            "C": int(match.group(5)),
+            "path": filepath
+        }
+    return None
+
 def main():
-    # 1. Config & GPU Setup
+    # 1. Config & Setup
     if not Path("config.yaml").exists():
         print("config.yaml not found.")
         return
     cfg = load_config()
     
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg['system']['gpu_id'])
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        print("GPU not found.")
-        sys.exit(1)
-
-    # 2. Dask Client
+    
+    # Dask Client
     client = Client(
         processes=False,
         n_workers=cfg['system']['dask_workers'],
@@ -36,43 +49,132 @@ def main():
     )
     print(f"Dashboard: {client.dashboard_link}")
 
-    # 3. Run Step 1: Convert
-    print("\n[Step 1] Converting TIFF to Zarr...")
-    zarr_dirs = tiff_to_zarr.run_conversion(cfg)
+    # =========================================================================
+    # Step 1: Zarr 변환 단계 
+    # =========================================================================
+    # True: 기존 변환된 파일이 있다면 변환 과정을 건너뜀 (Stitching 실험용)
+    # False: 처음부터 다시 변환 수행
+    SKIP_CONVERSION = True 
+
+    output_root = Path(cfg['paths']['output_root'])
+    zarr_dirs = []
+
+    if SKIP_CONVERSION and output_root.exists():
+        print("\n[Step 1] Skipping Conversion (Loading existing Zarrs)...")
+        # 출력 폴더에서 *_zarr로 끝나는 디렉토리만 찾아옴
+        zarr_dirs = sorted([p for p in output_root.glob("*_zarr") if p.is_dir()])
+        print(f"Loaded {len(zarr_dirs)} existing Zarr directories.")
+    
+    # 만약 건너뛰기를 안 했거나, 건너뛰려 했는데 파일이 하나도 없으면 변환 실행
+    if not zarr_dirs:
+        if SKIP_CONVERSION:
+            print("Warning: SKIP_CONVERSION is True but no files found. Running conversion anyway.")
+        
+        print("\n[Step 1] Converting TIFF to Zarr...")
+        zarr_dirs = tiff_to_zarr.run_conversion(cfg)
+    
     if not zarr_dirs:
         print("No data to process.")
         sys.exit(1)
 
-    # 4. Run Step 2: Min/Max Scan
-    print("\n[Step 2] Scanning Global Min/Max...")
-    g_min, g_max = stitch.scan_global_min_max(zarr_dirs)
-    if g_min is None:
-        print("Error reading Zarrs.")
-        sys.exit(1)
-    print(f"Range: {g_min:.2f} ~ {g_max:.2f}")
+    # 3. 데이터 그룹화
+    print("\n[Step 2] Organizing Data Structure...")
+    data_map = {} 
 
-    # 5. Run Step 3: Build Graph & Execute
-    print("\n[Step 3] Building Graph & Executing...")
-    final_image = stitch.build_graph(zarr_dirs, cfg, g_min, g_max)
+    for z_path in zarr_dirs:
+        original_stem = z_path.stem.replace("_zarr", "")
+        meta = parse_filename(Path(original_stem))
+        
+        if meta:
+            c, f, z = meta['C'], meta['F'], meta['Z']
+            if c not in data_map: data_map[c] = {}
+            if f not in data_map[c]: data_map[c][f] = []
+            data_map[c][f].append((z, z_path))
     
-    save_path = Path(cfg['paths']['output_root']) / cfg['paths']['final_filename']
-    print(f"Saving to {save_path}...")
+    sorted_channels = sorted(data_map.keys())
+    print(f"Found Channels: {sorted_channels}")
 
-    final_image.to_zarr(
-        str(save_path),
-        component="0",
-        overwrite=True,
-        compute=True,
-        compressor=zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
-    )
+    # 4. 채널별 처리
+    for ch in sorted_channels:
+        print(f"\n=== Processing Channel {ch} ===")
+        fields_dict = data_map[ch]
+        required_fields = cfg['preprocess']['rows'] * cfg['preprocess']['cols']
+        field_arrays = [] 
+        
+        # Field 순서대로 처리 (1 ~ N)
+        for i in range(1, required_fields + 1):
+            if i not in fields_dict:
+                print(f"Warning: Field {i} is missing in Channel {ch}. Filling with zeros not implemented yet.")
+                continue
+            
+            z_list = fields_dict[i]
+            z_list.sort(key=lambda x: x[0]) # Z 인덱스 기준 정렬
+            
+            slices = []
+            for z_idx, z_p in z_list:
+                arr = stitch.get_zarr_array_safe(z_p)
+                if arr is None: continue
+                
+                # 입력이 (1, 1, 1, Y, X) 등 고차원일 수 있으므로 무조건 마지막 2개 차원(Y, X)만 남기고 앞쪽 차원은 모두 제거
+                while arr.ndim > 2:
+                    arr = arr[0]
+                
+                # 이제 arr는 (Y, X) 2D Array
+                slices.append(arr)
+            
+            if not slices:
+                print(f"Warning: No valid slices for Field {i}")
+                continue
 
-    # [추가] 피라미드 생성 단계
-    print("\n[Step 4] Generating Image Pyramid...")
-    # levels=4 정도로 설정하면 (원본 -> 1/2 -> 1/4 -> 1/8 -> 1/16)까지 생성됨
-    stitch.generate_pyramid(save_path, levels=4)
-    
-    print("FINISH")
+            # (Y, X)들을 쌓아서 -> (Z, Y, X) 생성
+            # concatenate가 아닌 stack을 써야 새로운 차원(Z)이 생김
+            stack_z = da.stack(slices, axis=0) 
+            
+            # 최종적으로 (1, 1, Z, Y, X) 5D 형태로 확장
+            full_stack = stack_z[None, None, ...] 
+            
+            field_arrays.append(full_stack)
+
+        if not field_arrays:
+            print(f"Skipping Channel {ch} (No data)")
+            continue
+
+        # Min/Max Scan
+        print(f"Scanning Min/Max for Channel {ch}...")
+        g_min, g_max = stitch.scan_global_min_max_arrays(field_arrays)
+        print(f"Channel {ch} Range: {g_min:.2f} ~ {g_max:.2f}")
+
+        # Stitching
+        print(f"Stitching Channel {ch}...")
+        try:
+            final_image = stitch.build_graph(field_arrays, cfg, g_min, g_max)
+        except Exception as e:
+            print(f"Stitching Error: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+        
+        if final_image is None:
+            continue
+
+        # Save
+        out_filename = f"Channel_{ch}_stitched.zarr"
+        save_path = Path(cfg['paths']['output_root']) / out_filename
+        print(f"Saving to {save_path}...")
+        
+        final_image.to_zarr(
+            str(save_path),
+            component="0",
+            overwrite=True,
+            compute=True,
+            compressor=zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
+        )
+        
+        # Pyramid
+        stitch.generate_pyramid(save_path, levels=0)
+        print(f"Channel {ch} Done.")
+
+    print("\nALL FINISHED")
 
 if __name__ == "__main__":
     main()
-    
