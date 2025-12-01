@@ -4,8 +4,8 @@ system:
   dask_threads: 4
 
 paths:
-  input_root: "../data"
-  output_root: "output"
+  input_root: "../data/test2"
+  output_root: "output3"
   final_filename: "final_result.zarr"
   bioformats_path: "./bioformats2raw-0.7.0/bin/bioformats2raw"
 
