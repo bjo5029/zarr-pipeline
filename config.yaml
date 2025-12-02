@@ -1,11 +1,12 @@
 system:
   gpu_id: "0"
-  dask_workers: 4
+  use_processes: True
+  dask_workers: 6
   dask_threads: 4
 
 paths:
   input_root: "/home/jeongeun.baek/workspace/ws_test/data/20250716T094707_20250716_GCExp4_GC09_IF/Image/Well0001"
-  output_root: "output5"
+  output_root: "outputs/sift"
   final_filename: "final_result.zarr"
   bioformats_path: "./bioformats2raw-0.7.0/bin/bioformats2raw"
 
@@ -14,6 +15,7 @@ preprocess:
   cols: 3
   overlap_pct: 0.1
   search_px: 200
+  use_flat_field: True
 
 algorithm:
   psf_sigma: 2.0

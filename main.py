@@ -6,11 +6,14 @@ import zarr
 import torch
 import numpy as np
 import dask.array as da
+import time
 from pathlib import Path
 from dask.distributed import Client
 
+# import tiff_to_zarr_single as tiff_to_zarr
 import tiff_to_zarr_parallel as tiff_to_zarr 
-import stitch
+# import stitch_phase_correlation as stitch
+import stitch_sift as stitch
 
 def load_config():
     with open("config.yaml", 'r') as f:
@@ -33,6 +36,9 @@ def parse_filename(filepath):
     return None
 
 def main():
+    # 전체 시작 시간 기록
+    total_start_time = time.time()
+
     # 1. Config & Setup
     if not Path("config.yaml").exists():
         print("config.yaml not found.")
@@ -43,7 +49,7 @@ def main():
     
     # Dask Client
     client = Client(
-        processes=False,
+        processes=cfg['system'].get('use_processes', False),
         n_workers=cfg['system']['dask_workers'],
         threads_per_worker=cfg['system']['dask_threads']
     )
@@ -171,10 +177,20 @@ def main():
         )
         
         # Pyramid
-        stitch.generate_pyramid(save_path, levels=0)
+        stitch.generate_pyramid(save_path, levels=4)
         print(f"Channel {ch} Done.")
 
     print("\nALL FINISHED")
+
+    # 전체 종료 시간 기록 및 출력
+    total_end_time = time.time()
+    elapsed_time = total_end_time - total_start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+    
+    print("="*50)
+    print(f"Total Execution Time: {elapsed_time:.2f} seconds ({minutes}m {seconds}s)")
+    print("="*50)
 
 if __name__ == "__main__":
     main()

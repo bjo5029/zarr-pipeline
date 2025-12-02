@@ -2,6 +2,7 @@ import zarr
 import numpy as np
 import dask.array as da
 import deconvolution 
+import flat_field_correction
 
 def get_zarr_array_safe(z_path):
     """(기존 유지) Zarr 파일을 안전하게 Dask Array로 로드"""
@@ -77,21 +78,25 @@ def phase_corr(a, b, search_px):
     return np.array([y, x], dtype=float)
 
 def build_graph(tiles, cfg, g_min, g_max):
-    """
-    [수정] tiles 인자가 '경로 리스트'가 아니라 'Dask Array 리스트' (순서: Row-major)
-    Input tiles shape expected: List of (1, 1, Z, Y, X) arrays
-    """
     rows = cfg['preprocess']['rows']
     cols = cfg['preprocess']['cols']
     overlap_pct = cfg['preprocess']['overlap_pct']
     search_px = cfg['preprocess'].get('search_px', 30)
+    
+    # FFC 사용 여부 확인
+    use_ffc = cfg['preprocess'].get('use_flat_field', False)
 
     if len(tiles) != rows * cols:
         print(f"Error: Tile count ({len(tiles)}) does not match grid ({rows}x{cols})")
         return None
 
-    # Shape 추출 (T, C, Z, Y, X)
     _, _, _, H, W = tiles[0].shape
+    
+    # [수정] correction 모듈을 사용하여 더미 데이터 생성
+    if use_ffc:
+        print(" [Info] Applying Flat Field Correction (Dummy Data)...")
+        # correction.py의 함수 호출
+        dummy_flat, dummy_dark = flat_field_correction.generate_dummy_references((H, W))
     
     default_ov_x = int(W * overlap_pct)
     default_ov_y = int(H * overlap_pct)
@@ -104,14 +109,16 @@ def build_graph(tiles, cfg, g_min, g_max):
         row_tiles_processed = []
         for c in range(cols):
             idx = r * cols + c
-            tile = tiles[idx]
+            tile = tiles[idx] 
             
-            # Deconvolution 적용 (map_blocks)
-            # tile shape: (1, 1, Z, Y, X)
-            # chunks 유지, drop_axis/new_axis 주의
+            # [수정] correction 모듈을 사용하여 보정 적용
+            if use_ffc:
+                tile = flat_field_correction.apply_flat_field(tile, dummy_flat, dummy_dark)
+            
+            # Deconvolution 적용
             tile_deconv = tile.map_blocks(
                 deconvolution.deconv_wrapper_torch,
-                psf_cpu=deconvolution.get_psf_numpy(), # PSF 생성
+                psf_cpu=deconvolution.get_psf_numpy(),
                 iterations=cfg['algorithm']['iterations'],
                 global_min=g_min,
                 global_max=g_max,
@@ -122,9 +129,9 @@ def build_graph(tiles, cfg, g_min, g_max):
             if c == 0:
                 row_tiles_processed.append(tile_deconv)
             else:
-                prev_tile = tiles[idx - 1] # 보정 계산은 no-deconv로 하는게 안정적일 수 있음
-                # 일단 편의상 Deconv 전 원본끼리 비교하여 shift 계산
+                prev_tile = tiles[idx - 1] 
                 
+                # Shift 계산
                 patch_L = extract_patch_numpy(prev_tile, "right", default_ov_x, default_ov_y)
                 patch_R = extract_patch_numpy(tile, "left", default_ov_x, default_ov_y)
                 
@@ -134,11 +141,10 @@ def build_graph(tiles, cfg, g_min, g_max):
                 cut_amount = default_ov_x - shift_x
                 cut_amount = max(1, min(cut_amount, W - 1))
                 
-                # 자르는건 Deconv된 결과물
                 tile_cropped = tile_deconv[..., :, :, cut_amount:]
                 row_tiles_processed.append(tile_cropped)
                 
-        row_image = da.concatenate(row_tiles_processed, axis=4) # Axis 4 = X
+        row_image = da.concatenate(row_tiles_processed, axis=4) 
         stitched_rows.append(row_image)
 
     min_width = min([row.shape[-1] for row in stitched_rows])
@@ -158,14 +164,16 @@ def build_graph(tiles, cfg, g_min, g_max):
             x_end = x_start + roi_w
 
             try:
-                # 3D 5D Array -> mean(axis=(0,1,2)) -> (Y, X) -> crop
-                # Shift 계산 시 T,C,Z 축 압축
                 patch_T = prev_row[..., :, -default_ov_y:, x_start:x_end].max(axis=2).mean(axis=(0,1)).compute()
                 patch_B = row_img[..., :, :default_ov_y, x_start:x_end].max(axis=2).mean(axis=(0,1)).compute()
                 
                 shift = phase_corr(patch_T, patch_B, search_px)
                 shift_y = int(shift[0])
+                
+                # [중요] 세로 자르는 양 강제 조정이 필요하면 여기서 수정
                 cut_amount = default_ov_y - shift_y
+                # cut_amount = 100 # 강제 지정 시 주석 해제
+                
                 cut_amount = max(1, min(cut_amount, H - 1))
             except Exception as e:
                 print(f"Warning: Vertical shift calc error: {e}")
@@ -174,7 +182,7 @@ def build_graph(tiles, cfg, g_min, g_max):
             row_cropped = row_img[..., :, cut_amount:, :]
             final_col_processed.append(row_cropped)
 
-    final_image = da.concatenate(final_col_processed, axis=3) # Axis 3 = Y
+    final_image = da.concatenate(final_col_processed, axis=3) 
     return final_image
 
 def generate_pyramid(base_zarr_path, levels=3):

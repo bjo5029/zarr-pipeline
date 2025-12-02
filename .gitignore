@@ -3,7 +3,9 @@
 __pycache__/
 data/
 output/
+outputs/
 output*/
-secret.txt
+*.tif
+*.tiff
 bioformats2raw-0.7.0/
 bioformats2raw-0.7.0.zip
