@@ -10,10 +10,19 @@ import time
 from pathlib import Path
 from dask.distributed import Client
 
-# import tiff_to_zarr_single as tiff_to_zarr
 import tiff_to_zarr_parallel as tiff_to_zarr 
-# import stitch_phase_correlation as stitch
-import stitch_sift as stitch
+
+# ========================================================
+# [필수] mist 폴더를 라이브러리 경로에 추가
+# 이 코드가 import stitch_mist 보다 먼저 나와야 합니다!
+# ========================================================
+current_dir = Path(__file__).resolve().parent
+mist_dir = current_dir / "mist"
+if str(mist_dir) not in sys.path:
+    sys.path.append(str(mist_dir))
+import stitch_mist as stitch # MIST 모듈 사용
+
+import flat_field_correction
 
 def load_config():
     with open("config.yaml", 'r') as f:
@@ -36,7 +45,6 @@ def parse_filename(filepath):
     return None
 
 def main():
-    # 전체 시작 시간 기록
     total_start_time = time.time()
 
     # 1. Config & Setup
@@ -49,7 +57,7 @@ def main():
     
     # Dask Client
     client = Client(
-        processes=cfg['system'].get('use_processes', False),
+        processes=cfg['system'].get('use_processes', True), # 기본값 True 추천
         n_workers=cfg['system']['dask_workers'],
         threads_per_worker=cfg['system']['dask_threads']
     )
@@ -58,8 +66,6 @@ def main():
     # =========================================================================
     # Step 1: Zarr 변환 단계 
     # =========================================================================
-    # True: 기존 변환된 파일이 있다면 변환 과정을 건너뜀 (Stitching 실험용)
-    # False: 처음부터 다시 변환 수행
     SKIP_CONVERSION = True 
 
     output_root = Path(cfg['paths']['output_root'])
@@ -67,15 +73,12 @@ def main():
 
     if SKIP_CONVERSION and output_root.exists():
         print("\n[Step 1] Skipping Conversion (Loading existing Zarrs)...")
-        # 출력 폴더에서 *_zarr로 끝나는 디렉토리만 찾아옴
         zarr_dirs = sorted([p for p in output_root.glob("*_zarr") if p.is_dir()])
         print(f"Loaded {len(zarr_dirs)} existing Zarr directories.")
     
-    # 만약 건너뛰기를 안 했거나, 건너뛰려 했는데 파일이 하나도 없으면 변환 실행
     if not zarr_dirs:
         if SKIP_CONVERSION:
             print("Warning: SKIP_CONVERSION is True but no files found. Running conversion anyway.")
-        
         print("\n[Step 1] Converting TIFF to Zarr...")
         zarr_dirs = tiff_to_zarr.run_conversion(cfg)
     
@@ -107,38 +110,31 @@ def main():
         required_fields = cfg['preprocess']['rows'] * cfg['preprocess']['cols']
         field_arrays = [] 
         
-        # Field 순서대로 처리 (1 ~ N)
+        # Field 순서대로 처리
         for i in range(1, required_fields + 1):
             if i not in fields_dict:
                 print(f"Warning: Field {i} is missing in Channel {ch}. Filling with zeros not implemented yet.")
                 continue
             
             z_list = fields_dict[i]
-            z_list.sort(key=lambda x: x[0]) # Z 인덱스 기준 정렬
+            z_list.sort(key=lambda x: x[0]) 
             
             slices = []
             for z_idx, z_p in z_list:
                 arr = stitch.get_zarr_array_safe(z_p)
                 if arr is None: continue
                 
-                # 입력이 (1, 1, 1, Y, X) 등 고차원일 수 있으므로 무조건 마지막 2개 차원(Y, X)만 남기고 앞쪽 차원은 모두 제거
                 while arr.ndim > 2:
                     arr = arr[0]
                 
-                # 이제 arr는 (Y, X) 2D Array
                 slices.append(arr)
             
             if not slices:
                 print(f"Warning: No valid slices for Field {i}")
                 continue
 
-            # (Y, X)들을 쌓아서 -> (Z, Y, X) 생성
-            # concatenate가 아닌 stack을 써야 새로운 차원(Z)이 생김
             stack_z = da.stack(slices, axis=0) 
-            
-            # 최종적으로 (1, 1, Z, Y, X) 5D 형태로 확장
             full_stack = stack_z[None, None, ...] 
-            
             field_arrays.append(full_stack)
 
         if not field_arrays:
@@ -153,7 +149,16 @@ def main():
         # Stitching
         print(f"Stitching Channel {ch}...")
         try:
+            # =================================================================
+            # [수정됨] MIST 방식 호출 (통합된 build_graph 하나만 호출하면 됨)
+            # =================================================================
+            
+            # FFC 더미 데이터 생성 등은 stitch_mist.py 내부에서 처리하거나
+            # 필요하다면 여기서 넘겨줄 수 있으나, 현재 stitch_mist 구조상 
+            # 내부에서 생성하므로 인자만 잘 넘기면 됩니다.
+            
             final_image = stitch.build_graph(field_arrays, cfg, g_min, g_max)
+            
         except Exception as e:
             print(f"Stitching Error: {e}")
             import traceback
@@ -182,7 +187,6 @@ def main():
 
     print("\nALL FINISHED")
 
-    # 전체 종료 시간 기록 및 출력
     total_end_time = time.time()
     elapsed_time = total_end_time - total_start_time
     minutes = int(elapsed_time // 60)

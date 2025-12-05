@@ -10,4 +10,4 @@ def pyramid_to_tiff(zarr_path, out_tiff):
     tifffile.imwrite(out_tiff, arr)
     print(f"Saved: {out_tiff}")
 
-pyramid_to_tiff("/home/jeongeun.baek/workspace/ws_test/zarr-pipeline/outputs/sift/Channel_1_stitched.zarr", "outputs/sift_vertical_match.tiff")
+pyramid_to_tiff("/home/jeongeun.baek/workspace/ws_test/zarr-pipeline/outputs/Well0008/mist/Channel_1_stitched.zarr", "outputs/Well0008/mist.tiff")

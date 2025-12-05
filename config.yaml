@@ -6,7 +6,7 @@ system:
 
 paths:
   input_root: "/home/jeongeun.baek/workspace/ws_test/data/20250716T094707_20250716_GCExp4_GC09_IF/Image/Well0001"
-  output_root: "outputs/sift"
+  output_root: "outputs/Well0001/mist"
   final_filename: "final_result.zarr"
   bioformats_path: "./bioformats2raw-0.7.0/bin/bioformats2raw"
 
@@ -19,6 +19,6 @@ preprocess:
 
 algorithm:
   psf_sigma: 2.0
-  iterations: 20
+  iterations: 20 # 0이면 Deconvolution 안함
   pad_width: 32
   
