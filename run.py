@@ -11,16 +11,8 @@ from pathlib import Path
 from dask.distributed import Client
 
 import conversion.tiff_to_zarr_parallel as tiff_to_zarr 
-
-# # mist 폴더를 라이브러리 경로에 추가
-# current_dir = Path(__file__).resolve().parent
-# mist_dir = current_dir / "stitching/mist"
-# if str(mist_dir) not in sys.path:
-#     sys.path.append(str(mist_dir))
-import stitching.stitch_mist as stitch 
-
-# import stitching.stitch_sift as stitch
-
+# import stitching.stitch_mist as stitch 
+import stitching.stitch_sift as stitch
 import preprocessing.flat_field_correction
 
 def load_config():

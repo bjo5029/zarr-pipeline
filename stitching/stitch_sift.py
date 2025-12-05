@@ -141,7 +141,6 @@ def build_graph(tiles, cfg, g_min, g_max):
     cols = cfg['preprocess']['cols']
     overlap_pct = cfg['preprocess']['overlap_pct']
     
-    # FFC 사용 여부 확인
     use_ffc = cfg['preprocess'].get('use_flat_field', False)
 
     if len(tiles) != rows * cols:
@@ -150,7 +149,6 @@ def build_graph(tiles, cfg, g_min, g_max):
 
     _, _, _, H, W = tiles[0].shape
     
-    # [수정] correction 모듈을 사용하여 더미 데이터 생성
     if use_ffc:
         print(" [Info] Applying Flat Field Correction (Dummy Data)...")
         dummy_flat, dummy_dark = flat_field_correction.generate_dummy_references((H, W))
@@ -158,21 +156,20 @@ def build_graph(tiles, cfg, g_min, g_max):
     default_ov_x = int(W * overlap_pct)
     default_ov_y = int(H * overlap_pct)
 
-    print(f"Stitching {rows}x{cols} tiles (3D Stacked)...")
+    print(f"Stitching {rows}x{cols} tiles (3D Stacked + Center Cut)...")
 
-    # ---- Row Stitching (가로) ----
+    # [수정] 1. 가로(Row) 스티칭: 양쪽 절반씩 자르기 (Center Cut)
     stitched_rows = []
     for r in range(rows):
         row_tiles_processed = []
+        
+        # 1-1. 한 행의 모든 타일에 대해 Deconv 먼저 적용 (병렬)
+        row_tiles_deconv = []
         for c in range(cols):
-            idx = r * cols + c
-            tile = tiles[idx] 
-            
-            # FFC 적용
+            tile = tiles[r * cols + c]
             if use_ffc:
                 tile = flat_field_correction.apply_flat_field(tile, dummy_flat, dummy_dark)
             
-            # Deconvolution 적용
             tile_deconv = tile.map_blocks(
                 deconvolution.deconv_wrapper_torch,
                 psf_cpu=deconvolution.get_psf_numpy(),
@@ -182,68 +179,118 @@ def build_graph(tiles, cfg, g_min, g_max):
                 pad_width=cfg['algorithm']['pad_width'],
                 dtype=np.float32
             )
+            row_tiles_deconv.append(tile_deconv)
 
+        # 1-2. SIFT로 Shift 계산 및 양쪽 자르기 적용
+        # shift 값들을 미리 저장
+        shifts_x = [0] * cols # shift_x[c]는 c와 c-1 사이의 이동량
+        
+        for c in range(1, cols):
+            # [중요] 위치 계산은 Deconv 전 원본으로 하는게 더 안정적일 수 있음
+            # 여기서는 편의상 원본(tiles)에서 패치 추출
+            prev_tile_raw = tiles[r * cols + (c - 1)]
+            curr_tile_raw = tiles[r * cols + c]
+            
+            patch_L = extract_patch_numpy(prev_tile_raw, "right", default_ov_x, default_ov_y)
+            patch_R = extract_patch_numpy(curr_tile_raw, "left", default_ov_x, default_ov_y)
+            
+            print(f"   [Horizontal] Row {r+1}: Tile {c-1} <-> {c}")
+            shift = find_shift_sift(patch_L, patch_R)
+            shifts_x[c] = int(shift[1])
+
+        # 1-3. 자르기 및 붙이기
+        for c in range(cols):
+            tile = row_tiles_deconv[c]
+            
+            # (1) 왼쪽(앞) 자르기
             if c == 0:
-                row_tiles_processed.append(tile_deconv)
+                cut_left = 0
             else:
-                prev_tile = tiles[idx - 1] 
+                # 이전 타일과의 관계
+                shift_val = shifts_x[c]
+                overlap = default_ov_x - shift_val
+                cut_left = int(max(0, overlap) // 2)
+
+            # (2) 오른쪽(뒤) 자르기
+            if c == cols - 1:
+                cut_right = None
+            else:
+                # 다음 타일과의 관계
+                next_shift_val = shifts_x[c+1]
+                next_overlap = default_ov_x - next_shift_val
+                cut_right_amount = int(max(0, next_overlap) // 2)
                 
-                # Shift 계산
-                patch_L = extract_patch_numpy(prev_tile, "right", default_ov_x, default_ov_y)
-                patch_R = extract_patch_numpy(tile, "left", default_ov_x, default_ov_y)
-                
-                print(f"   [Horizontal] Stitching Row {r+1}: Tile {c} <-> {c+1}")
-                shift = find_shift_sift(patch_L, patch_R)
-                shift_x = int(shift[1])
-                
-                cut_amount = default_ov_x - shift_x
-                cut_amount = max(1, min(cut_amount, W - 1))
-                
-                tile_cropped = tile_deconv[..., :, :, cut_amount:]
-                row_tiles_processed.append(tile_cropped)
+                if cut_right_amount > 0:
+                    cut_right = -cut_right_amount
+                else:
+                    cut_right = None
+            
+            # 슬라이싱 적용
+            tile_cropped = tile[..., :, :, cut_left : cut_right]
+            row_tiles_processed.append(tile_cropped)
                 
         row_image = da.concatenate(row_tiles_processed, axis=4) 
         stitched_rows.append(row_image)
 
+    # 모든 행의 너비 맞추기 (가장 작은 너비 기준)
     min_width = min([row.shape[-1] for row in stitched_rows])
     stitched_rows = [row[..., :min_width] for row in stitched_rows]
 
-    # ---- Col Stitching (세로) ----
+    # [수정] 2. 세로(Col) 스티칭: 양쪽 절반씩 자르기 (Center Cut)
     final_col_processed = []
+    
+    # 세로 Shift 값 미리 계산
+    shifts_y = [0] * rows
+    
+    # 2-1. Shift 계산 (전체 너비 사용)
+    for r in range(1, rows):
+        prev_row = stitched_rows[r-1]
+        curr_row = stitched_rows[r]
+        
+        try:
+            # 전체 너비 사용 & 다운샘플링
+            patch_T_dask = prev_row[..., :, -default_ov_y:, :]
+            patch_B_dask = curr_row[..., :, :default_ov_y, :]
+            
+            patch_T = patch_T_dask.max(axis=2).mean(axis=(0,1))[:, ::2].compute()
+            patch_B = patch_B_dask.max(axis=2).mean(axis=(0,1))[:, ::2].compute()
+            
+            print(f"   [Vertical] Stitching Row {r-1} <-> {r}")
+            shift = find_shift_sift(patch_T, patch_B)
+            shifts_y[r] = int(shift[0])
+            
+        except Exception as e:
+            print(f"Warning: Vertical shift calc error: {e}")
+            shifts_y[r] = 0
+
+    # 2-2. 자르기 및 붙이기
     for r in range(rows):
         row_img = stitched_rows[r]
+        
+        # (1) 위쪽(Top) 자르기
         if r == 0:
-            final_col_processed.append(row_img)
+            cut_top = 0
         else:
-            prev_row = stitched_rows[r-1]
+            shift_val = shifts_y[r]
+            overlap = default_ov_y - shift_val
+            cut_top = int(max(0, overlap) // 2)
             
-            try:
-                # [수정] 세로 스티칭 시 전체 너비를 사용하여 SIFT 정확도 향상
-                # 메모리 절약을 위해 가로축 다운샘플링(::2) 수행
-                
-                # 위쪽 행의 밑바닥 (전체 너비)
-                patch_T_dask = prev_row[..., :, -default_ov_y:, :]
-                # 아래쪽 행의 윗부분 (전체 너비)
-                patch_B_dask = row_img[..., :, :default_ov_y, :]
-                
-                # MIP & Mean -> 2D 변환 및 다운샘플링
-                patch_T = patch_T_dask.max(axis=2).mean(axis=(0,1))[:, ::2].compute()
-                patch_B = patch_B_dask.max(axis=2).mean(axis=(0,1))[:, ::2].compute()
-                
-                print(f"   [Vertical] Stitching Row {r} <-> {r+1}")
-                shift = find_shift_sift(patch_T, patch_B)
-                
-                shift_y = int(shift[0])
-                # shift_x = int(shift[1] * 2) # X축 이동은 여기서 무시하거나 필요 시 보정
-                
-                cut_amount = default_ov_y - shift_y
-                cut_amount = max(1, min(cut_amount, H - 1))
-            except Exception as e:
-                print(f"Warning: Vertical shift calc error: {e}")
-                cut_amount = default_ov_y
+        # (2) 아래쪽(Bottom) 자르기
+        if r == rows - 1:
+            cut_bottom = None
+        else:
+            next_shift_val = shifts_y[r+1]
+            next_overlap = default_ov_y - next_shift_val
+            cut_bottom_amount = int(max(0, next_overlap) // 2)
+            
+            if cut_bottom_amount > 0:
+                cut_bottom = -cut_bottom_amount
+            else:
+                cut_bottom = None
 
-            row_cropped = row_img[..., :, cut_amount:, :]
-            final_col_processed.append(row_cropped)
+        # 슬라이싱 적용
+        row_cropped = row_img[..., :, cut_top : cut_bottom, :]
+        final_col_processed.append(row_cropped)
 
     final_image = da.concatenate(final_col_processed, axis=3) 
     return final_image
