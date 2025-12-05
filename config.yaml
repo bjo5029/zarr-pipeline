@@ -6,7 +6,7 @@ system:
 
 paths:
   input_root: "/home/jeongeun.baek/workspace/ws_test/data/20250716T094707_20250716_GCExp4_GC09_IF/Image/Well0025"
-  output_root: "outputs/Well0025/sift"
+  output_root: "outputs/Well0025/mist"
   final_filename: "final_result.zarr"
   bioformats_path: "./bioformats2raw-0.7.0/bin/bioformats2raw"
 

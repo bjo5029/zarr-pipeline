@@ -11,8 +11,8 @@ from pathlib import Path
 from dask.distributed import Client
 
 import conversion.tiff_to_zarr_parallel as tiff_to_zarr 
-# import stitching.stitch_mist as stitch 
-import stitching.stitch_sift as stitch
+import stitching.stitch_mist as stitch 
+# import stitching.stitch_sift as stitch
 import preprocessing.flat_field_correction
 
 def load_config():

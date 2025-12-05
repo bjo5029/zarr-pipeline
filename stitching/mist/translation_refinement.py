@@ -315,7 +315,6 @@ class GlobalPositions():
         next_tile = None
         best_ncc = -np.inf
 
-        # loop over all tiles currently in the MST and find the neighbor with the highest correlation
         for tile in frontier_tiles:
             for i in range(len(self._dx)):
                 r = tile.r + self._dy[i]
@@ -325,7 +324,16 @@ class GlobalPositions():
                         neighbor_tile = self.tile_grid.get_tile(r, c)
                         if neighbor_tile is None:
                             continue
-                        edge_weight = tile.get_peak(neighbor_tile).ncc
+                        
+                        # [수정] 
+                        # get_peak()가 반환하는 Peak 객체에서 ncc를 가져옴.
+                        peak = tile.get_peak(neighbor_tile)
+                        edge_weight = peak.ncc
+                        
+                        # Python의 np.nan은 비교를 망치니까, -1.0으로 바꿔줌.
+                        if np.isnan(edge_weight):
+                            edge_weight = -1.0 
+                            
                         if edge_weight > best_ncc:
                             best_ncc = edge_weight
                             origin_tile = tile
