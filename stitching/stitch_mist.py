@@ -257,52 +257,69 @@ def build_graph(tiles, cfg, g_min, g_max):
     print(" [MIST] Assembling final 3D volume...")
 
     stitched_rows = []
+
+    # [수정] 1. 가로(Row) 스티칭: 양쪽 절반씩 자르기 (Center Cut)
     for r in range(rows):
-        row_tiles = []
-        for c in range(cols):
-            idx = r * cols + c
-            tile = tiles[idx]
-            
-            # Deconvolution & FFC 적용
-            # (필요시 여기서 FFC 등 적용. 현재는 원본 tile 사용)
-            
-            if c == 0:
-                row_tiles.append(tile)
-            else:
-                prev_mt = mist_grid.get_tile(r, c-1)
-                curr_mt = mist_grid.get_tile(r, c)
-                
-                # MIST가 계산한 X 거리
-                dx = curr_mt.abs_x - prev_mt.abs_x
-                overlap = W - dx
-                cut = int(max(0, overlap))
-                
-                # 잘라내고 붙이기
-                tile_cropped = tile[..., :, :, cut:]
-                row_tiles.append(tile_cropped)
+        # 해당 행의 원본 타일들을 리스트로 가져옴
+        current_row_tiles = [tiles[r * cols + c] for c in range(cols)]
         
-        row_img = da.concatenate(row_tiles, axis=4) # X축
+        # 왼쪽(c-1)과 오른쪽(c) 타일 사이의 오버랩을 계산하여 절반씩 자름
+        for c in range(1, cols):
+            prev_mt = mist_grid.get_tile(r, c - 1)
+            curr_mt = mist_grid.get_tile(r, c)
+            
+            # X축 오버랩 계산 (W - 거리)
+            dx = curr_mt.abs_x - prev_mt.abs_x
+            overlap = W - dx
+            
+            # 오버랩이 있을 경우에만 Center Cut 수행
+            if overlap > 0:
+                cut = int(overlap)
+                half_left = cut // 2          # 앞 타일의 뒷부분(오른쪽)에서 자를 양
+                half_right = cut - half_left  # 뒤 타일의 앞부분(왼쪽)에서 자를 양
+                
+                # [Center Cut]
+                # 1) 앞 타일: 오른쪽 끝부분 잘라내기 ([..., :-half_left])
+                if half_left > 0:
+                    current_row_tiles[c - 1] = current_row_tiles[c - 1][..., :, :, :-half_left]
+                
+                # 2) 뒤 타일: 왼쪽 앞부분 잘라내기 ([..., half_right:])
+                if half_right > 0:
+                    current_row_tiles[c] = current_row_tiles[c][..., :, :, half_right:]
+        
+        # 잘라낸 타일들을 가로(X축, axis=4)로 연결
+        row_img = da.concatenate(current_row_tiles, axis=4)
         stitched_rows.append(row_img)
 
-    # Col Stitching
-    final_cols = []
+    # [수정] 2. 세로(Col) 스티칭: 양쪽 절반씩 자르기 (Center Cut)
+    # 먼저 가로 길이를 최소값으로 맞춤 (들쑥날쑥할 수 있으므로)
     min_width = min(row.shape[-1] for row in stitched_rows)
     stitched_rows = [row[..., :min_width] for row in stitched_rows]
     
-    for r in range(rows):
-        row_img = stitched_rows[r]
-        if r == 0:
-            final_cols.append(row_img)
-        else:
-            prev_mt_0 = mist_grid.get_tile(r-1, 0)
-            curr_mt_0 = mist_grid.get_tile(r, 0)
+    # 위(r-1)와 아래(r) 행 사이의 오버랩을 계산하여 절반씩 자름
+    for r in range(1, rows):
+        # Y축 위치는 첫 번째 컬럼(0)을 기준으로 계산 (일반적으로 행 전체가 같이 움직임)
+        prev_mt = mist_grid.get_tile(r - 1, 0)
+        curr_mt = mist_grid.get_tile(r, 0)
+        
+        # Y축 오버랩 계산 (H - 거리)
+        dy = curr_mt.abs_y - prev_mt.abs_y
+        overlap_y = H - dy
+        
+        if overlap_y > 0:
+            cut = int(overlap_y)
+            half_top = cut // 2           # 위쪽 행의 아랫부분 자르기
+            half_bottom = cut - half_top  # 아래쪽 행의 윗부분 자르기
             
-            dy = curr_mt_0.abs_y - prev_mt_0.abs_y
-            overlap_y = H - dy
-            cut_y = int(max(0, overlap_y))
+            # [Center Cut]
+            # 1) 위쪽 행: 아랫부분 잘라내기 (Axis 3 = Y축)
+            if half_top > 0:
+                stitched_rows[r - 1] = stitched_rows[r - 1][..., :, :-half_top, :]
             
-            row_cropped = row_img[..., :, cut_y:, :]
-            final_cols.append(row_cropped)
+            # 2) 아래쪽 행: 윗부분 잘라내기
+            if half_bottom > 0:
+                stitched_rows[r] = stitched_rows[r][..., :, half_bottom:, :]
 
-    final_image = da.concatenate(final_cols, axis=3) # Y축
+    # 최종 세로(Y축, axis=3) 연결
+    final_image = da.concatenate(stitched_rows, axis=3) 
     return final_image
