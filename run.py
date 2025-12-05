@@ -148,7 +148,7 @@ def main():
             # 필요하다면 여기서 넘겨줄 수 있으나, 현재 stitch_mist 구조상 
             # 내부에서 생성하므로 인자만 잘 넘기면 됩니다.
             
-            final_image = stitch.build_graph(field_arrays, cfg, g_min, g_max)
+            final_image = stitch.build_graph_linear_blend(field_arrays, cfg, g_min, g_max)
             
         except Exception as e:
             print(f"Stitching Error: {e}")
