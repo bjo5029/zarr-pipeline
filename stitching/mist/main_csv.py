@@ -13,14 +13,16 @@ import argparse
 import time
 
 # local imports
-import translation_refinement
-import img_grid
-import pciam
-import stage_model
-import assemble
-import utils
+from . import translation_refinement
+from . import img_grid
+from . import pciam
+from . import stage_model
+from . import assemble
+from . import utils
 
-def mist(args: argparse.Namespace):
+
+
+def mist_from_csv(args: argparse.Namespace):
     if utils.is_ide_debug_mode():
         logging.info("IDE in debug mode, automatic output overwriting enabled.")
         if os.path.exists(args.output_dirpath):
@@ -38,13 +40,7 @@ def mist(args: argparse.Namespace):
     logging.getLogger().addHandler(fh)
 
     # build the grid representation
-    if args.filename_pattern_type == 'SEQUENTIAL':
-        tile_grid = img_grid.TileGridSequential(args)
-    elif args.filename_pattern_type == 'ROWCOL':
-        tile_grid = img_grid.TileGridRowCol(args)
-    else:
-        raise RuntimeError("Unknown filename pattern type: {}".format(args.filename_pattern_type))
-
+    tile_grid = img_grid.TileGridFromCsv(args)
     tile_grid.print_names()
 
     mist_start_time = time.time()
@@ -100,20 +96,12 @@ def mist(args: argparse.Namespace):
 if __name__ == "__main__":
 
     # TODO add ability to load/parse the stitching-params file
-    # TODO add support for loading a csv file of image names as the grid
 
-    parser = argparse.ArgumentParser(description='Runs MIST stitching')
+    parser = argparse.ArgumentParser(description='Runs MIST stitching where the image grid structure is determined by a csv file.')
     parser.add_argument('--image-dirpath', type=str, required=True)
     parser.add_argument('--output-dirpath', type=str, required=True)
-    parser.add_argument('--grid-width', type=int, required=True)
-    parser.add_argument('--grid-height', type=int, required=True)
-    parser.add_argument('--start-tile', type=int, default=0, help='The tile number to start at when using sequential tile numbering')
-    parser.add_argument('--start-row', type=int, default=0, help='The row number to start at when using row/col tile numbering')
-    parser.add_argument('--start-col', type=int, default=0, help='The col number to start at when using row/col tile numbering')
-    parser.add_argument('--filename-pattern', type=str, required=True)
-    parser.add_argument('--filename-pattern-type', type=str, required=True, choices=['SEQUENTIAL', 'ROWCOL'])
-    parser.add_argument('--grid-origin', type=str, required=True, choices=['UL', 'UR', 'LL', 'LR'])
-    parser.add_argument('--numbering-pattern', type=str, required=True, choices=['HORIZONTALCOMBING', 'VERTICALCOMBING', 'HORIZONTALCONTINUOUS', 'VERTICALCONTINUOUS'])
+    parser.add_argument('--grid-csv-filepath', type=str, required=True, help='Filepath to the csv file which holds the grid structure. Should contain just the filename (no path) to the images in the grid.')
+
     parser.add_argument('--output-prefix', type=str, default='img-')
     parser.add_argument('--save-image', action="store_true", default=False)
     parser.add_argument('--disable-mem-cache', action="store_true", default=False)
@@ -133,4 +121,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    mist(args)
+    mist_from_csv(args)

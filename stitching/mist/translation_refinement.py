@@ -7,11 +7,11 @@ import copy
 import enum
 
 # local imports
-import img_grid
-import img_tile
-import stage_model
-import pciam
-import utils
+from . import img_grid
+from . import img_tile
+from . import stage_model
+from . import pciam
+from . import utils
 
 
 class HillClimbDirection(enum.Enum):
@@ -412,9 +412,19 @@ class GlobalPositions():
         mst_size = 1  # current size is 1 b/c startTile has been added
 
         tgt_mst_size = self.tile_grid.get_num_valid_tiles()
-        while mst_size < tgt_mst_size:
-            mst_size = self.traverse_next_mst_tile(frontier_tiles, visited_tiles, mst_release_counts, mst_size)
+        # # [추가] 무한 루프 방지용 카운터
+        # max_iterations = tgt_mst_size * 10 
+        # iter_count = 0
 
+        while mst_size < tgt_mst_size:
+        #     # [추가] 안전장치: 너무 많이 돌면 강제로 멈춤
+        #     iter_count += 1
+        #     if iter_count > max_iterations:
+        #         logging.warning(f"MST Traversal stuck! Force breaking. (Size: {mst_size}/{tgt_mst_size})")
+        #         break
+                
+            mst_size = self.traverse_next_mst_tile(frontier_tiles, visited_tiles, mst_release_counts, mst_size)
+        
         logging.info("Completed MST traversal")
 
         # Translates all vertices in the grid by the minX and minY values of the entire grid.

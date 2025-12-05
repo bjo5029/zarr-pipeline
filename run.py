@@ -10,19 +10,18 @@ import time
 from pathlib import Path
 from dask.distributed import Client
 
-import tiff_to_zarr_parallel as tiff_to_zarr 
+import conversion.tiff_to_zarr_parallel as tiff_to_zarr 
 
-# ========================================================
-# [필수] mist 폴더를 라이브러리 경로에 추가
-# 이 코드가 import stitch_mist 보다 먼저 나와야 합니다!
-# ========================================================
-current_dir = Path(__file__).resolve().parent
-mist_dir = current_dir / "mist"
-if str(mist_dir) not in sys.path:
-    sys.path.append(str(mist_dir))
-import stitch_mist as stitch # MIST 모듈 사용
+# # mist 폴더를 라이브러리 경로에 추가
+# current_dir = Path(__file__).resolve().parent
+# mist_dir = current_dir / "stitching/mist"
+# if str(mist_dir) not in sys.path:
+#     sys.path.append(str(mist_dir))
+import stitching.stitch_mist as stitch 
 
-import flat_field_correction
+# import stitching.stitch_sift as stitch
+
+import preprocessing.flat_field_correction
 
 def load_config():
     with open("config.yaml", 'r') as f:

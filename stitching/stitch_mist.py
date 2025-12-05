@@ -5,12 +5,7 @@ import logging
 import sys
 import os
 
-# sys.path.append("mist")가 main.py에 되어 있으므로 바로 임포트
-import pciam
-import stage_model
-import translation_refinement
-import img_tile
-import mle_estimator
+from .mist import pciam, stage_model, translation_refinement, img_tile, mle_estimator
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(message)s")
