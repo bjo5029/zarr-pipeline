@@ -221,9 +221,34 @@ def build_graph_center_cut(tiles, cfg, g_min, g_max):
     # A. 2D MIP 생성
     print(" [MIST] Generating 2D MIPs for alignment calculation...")
     mip_tasks = []
+    
+    # 첫 번째 타일로 채널 타입 감지 (샘플링)
+    sample_tile = tiles[0][0, 0, ...].compute() # 실제 데이터 로딩
+    sample_mean = sample_tile.mean()
+    sample_max = sample_tile.max()
+    
+    # 평균 밝기가 최대값의 20% 이상이면 Brightfield(밝은 배경)로 간주
+    # (일반 형광 이미지는 배경이 0에 가까워서 평균이 매우 낮음)
+    is_brightfield = sample_mean > (sample_max * 0.2)
+    
+    if is_brightfield:
+        print("   -> Detected Brightfield/Phase Contrast: Applying INVERSION.")
+    else:
+        print("   -> Detected Fluorescence: Using RAW data (No Inversion).")
+
     for tile in tiles:
-        # Z축 Max Projection (가장 선명한 정보 사용)
-        mip = tile[0, 0, ...].max(axis=0) 
+        stack_data = tile[0, 0, ...] 
+        
+        if is_brightfield:
+            # 명시야인 경우에만 반전 수행
+            max_val = da.max(stack_data)
+            data_to_project = max_val - stack_data
+        else:
+            # 형광 이미지는 그대로 사용
+            data_to_project = stack_data
+        
+        # MIP 수행
+        mip = data_to_project.max(axis=0)
         mip_tasks.append(mip)
     
     mips_result = da.compute(mip_tasks)[0]
@@ -345,18 +370,34 @@ def build_graph_linear_blend(tiles, cfg, g_min, g_max):
     # A. 2D MIP 생성 (Brightfield/Phase Contrast 최적화)
     print(" [MIST] Generating 2D MIPs (Inverted for Brightfield)...")
     mip_tasks = []
+
+    # 첫 번째 타일로 채널 타입 감지 (샘플링)
+    sample_tile = tiles[0][0, 0, ...].compute() # 실제 데이터 로딩
+    sample_mean = sample_tile.mean()
+    sample_max = sample_tile.max()
+    
+    # 평균 밝기가 최대값의 20% 이상이면 Brightfield(밝은 배경)로 간주
+    # (일반 형광 이미지는 배경이 0에 가까워서 평균이 매우 낮음)
+    is_brightfield = sample_mean > (sample_max * 0.2)
+    
+    if is_brightfield:
+        print("   -> Detected Brightfield/Phase Contrast: Applying INVERSION.")
+    else:
+        print("   -> Detected Fluorescence: Using RAW data (No Inversion).")
+
     for tile in tiles:
-        # [수정] 명시야 이미지는 배경이 밝고 세포가 어두움 -> 반전시켜서 계산해야 정확함
-        # 1. (T, C, Z, Y, X) -> (Z, Y, X) 데이터 추출 (T=0, C=0 기준)
         stack_data = tile[0, 0, ...] 
         
-        # 2. 이미지 반전 (Invert): 밝은 배경(255) -> 어두움(0), 어두운 세포(0) -> 밝음(255)
-        # 해당 타일의 최대값을 기준으로 반전 (Dask 지연 연산 호환)
-        max_val = da.max(stack_data)
-        inverted_data = max_val - stack_data
+        if is_brightfield:
+            # 명시야인 경우에만 반전 수행
+            max_val = da.max(stack_data)
+            data_to_project = max_val - stack_data
+        else:
+            # 형광 이미지는 그대로 사용
+            data_to_project = stack_data
         
-        # 3. 반전된 데이터로 Max Projection 수행
-        mip = inverted_data.max(axis=0)
+        # MIP 수행
+        mip = data_to_project.max(axis=0)
         mip_tasks.append(mip)
     
     mips_result = da.compute(mip_tasks)[0]
@@ -411,8 +452,8 @@ def build_graph_linear_blend(tiles, cfg, g_min, g_max):
             
             # [수정] Center Cut 대신 Linear Blend 모듈 호출
             # axis=4 : 가로(Width) 방향 연결
-            current_row_img = linear_blend.blend_overlap(
-                current_row_img, next_tile, int(overlap), axis=4
+            current_row_img = linear_blend.blend_overlap_with_line(
+                current_row_img, next_tile, int(overlap), axis=4, draw_center_line=True
             )
             
         stitched_rows.append(current_row_img)
@@ -436,8 +477,8 @@ def build_graph_linear_blend(tiles, cfg, g_min, g_max):
         
         # [수정] Linear Blend 모듈 호출
         # axis=3 : 세로(Height) 방향 연결
-        final_image = linear_blend.blend_overlap(
-            final_image, next_row, int(overlap_y), axis=3
+        final_image = linear_blend.blend_overlap_with_line(
+            final_image, next_row, int(overlap_y), axis=3, draw_center_line=True
         )
 
     return final_image
